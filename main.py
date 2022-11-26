@@ -230,6 +230,14 @@ class InterfacePlugin(InterfaceAction):
             columns.append("Published")
             values.append(bookmark.Published)
 
+            if bookmark.ContextString is not None:
+                columns.append("ContextString")
+                values.append(bookmark.ContextString)
+
+            if bookmark.Type is not None:
+                columns.append("Type")
+                values.append(bookmark.Type)
+
             question_marks = map(lambda x: '?', columns)
 
             shelves_query = """INSERT INTO Bookmark (%s) VALUES (%s)""" % (
@@ -306,7 +314,7 @@ class InterfacePlugin(InterfaceAction):
                 "_", "\\_").replace("%", "\\%")
             shelves_query = """SELECT * 
                              FROM Bookmark 
-                             WHERE VolumeId LIKE 'file:///mnt/onboard/%s' ESCAPE '\\' AND
+                             WHERE Hidden = 'false' AND VolumeId LIKE 'file:///mnt/onboard/%s' ESCAPE '\\' AND
                              ContentId LIKE '/mnt/onboard/%s%%' ESCAPE '\\'""" % (escaped_book_path, escaped_book_path)
             cursor = connection.cursor()
             cursor.execute(shelves_query)
@@ -332,7 +340,9 @@ class InterfacePlugin(InterfaceAction):
                     row["UUID"],
                     row["UserID"],
                     row["SyncTime"],
-                    row["Published"]
+                    row["Published"],
+                    row["ContextString"],
+                    row["Type"]
                 ))
             cursor.close()
         return Bookmarks(shelves)
@@ -370,7 +380,9 @@ class Bookmarks(object):
                 bookmark_dict["UUID"],
                 bookmark_dict["UserID"],
                 bookmark_dict["SyncTime"],
-                bookmark_dict["Published"]
+                bookmark_dict["Published"],
+                bookmark_dict.get("ContextString", None),
+                bookmark_dict.get("Type", None)
             ))
         return Bookmarks(bookmarks)
 
@@ -397,6 +409,8 @@ class Bookmark(object):
                  UserID,
                  SyncTime,
                  Published,
+                 ContextString,
+                 Type,
                  *args, **kwargs):
         self.BookmarkID = BookmarkID
         self.ContentID = ContentID
@@ -419,6 +433,8 @@ class Bookmark(object):
         self.UserID = UserID
         self.SyncTime = SyncTime
         self.Published = Published
+        self.ContextString = ContextString
+        self.Type = Type
 
     def to_json(self):
         return json.dumps(self, default=lambda o: o.__dict__, indent=4, ensure_ascii=False)
@@ -444,7 +460,9 @@ class Bookmark(object):
                 self.Creator == other.Creator and
                 self.UserID == other.UserID and
                 self.SyncTime == other.SyncTime and
-                self.Published == other.Published)
+                self.Published == other.Published and
+                self.ContextString == other.ContextString and
+                self.Type == other.Type)
 
     def __ne__(self, other):
         return not self.__eq__(other)
