@@ -1,5 +1,6 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 import json
+import os
 from calibre.gui2.actions import InterfaceAction
 from calibre.gui2 import info_dialog
 from calibre.gui2 import error_dialog
@@ -238,19 +239,39 @@ class InterfacePlugin(InterfaceAction):
                 columns.append("Type")
                 values.append(bookmark.Type)
 
+            if bookmark.ExtraAnnotationData is not "":
+                columns.append("ExtraAnnotationData")
+                values.append(bytes.fromhex(bookmark.ExtraAnnotationData))
+
             question_marks = map(lambda x: '?', columns)
 
-            shelves_query = """INSERT INTO Bookmark (%s) VALUES (%s)""" % (
+            shelves_query = """INSERT OR REPLACE INTO Bookmark (%s) VALUES (%s)""" % (
                 ",".join(columns), ",".join(question_marks))
 
             cursor = connection.cursor()
             cursor.execute(shelves_query, values)
 
+        devicePath = self.get_device_path()
+        markupsPath = os.path.join(devicePath, ".kobo", "markups")
+        if not os.path.exists(markupsPath):
+            os.makedirs(markupsPath)
+        bookmarkId = bookmark.BookmarkID
+        if bookmark.ExtraAnnotationSVG is not None:
+            svgPath = os.path.join(markupsPath, bookmarkId + ".svg")
+            with open(svgPath, "wb") as file:
+                file.write(bytes.fromhex(bookmark.ExtraAnnotationSVG))
+        if bookmark.ExtraAnnotationJPG is not None:
+            svgPath = os.path.join(markupsPath, bookmarkId + ".jpg")
+            with open(svgPath, "wb") as file:
+                file.write(bytes.fromhex(bookmark.ExtraAnnotationJPG))
+
     def is_bookmark_exists_on_device(self, bookmark_id):
         with closing(self.device_database_connection(use_row_factory=True)) as connection:
-            query = """SELECT * 
-                             FROM Bookmark 
-                             WHERE BookmarkID = '%s'""" % bookmark_id
+            query = """
+                    SELECT BookmarkId
+                    FROM Bookmark 
+                    WHERE BookmarkID = '%s' AND Hidden = 'false'
+                    """ % bookmark_id
             cursor = connection.cursor()
             cursor.execute(query)
             for _, _ in enumerate(cursor):
@@ -309,17 +330,60 @@ class InterfacePlugin(InterfaceAction):
 
     def get_bookmarks_from_device(self, book_path):
         with closing(self.device_database_connection(use_row_factory=True)) as connection:
-            shelves = []
+            bookmarks = []
             escaped_book_path = book_path.replace(
                 "_", "\\_").replace("%", "\\%")
-            shelves_query = """SELECT * 
-                             FROM Bookmark 
-                             WHERE Hidden = 'false' AND VolumeId LIKE 'file:///mnt/onboard/%s' ESCAPE '\\' AND
-                             ContentId LIKE '/mnt/onboard/%s%%' ESCAPE '\\'""" % (escaped_book_path, escaped_book_path)
+            bookmarks_query = """
+                            SELECT 
+                                BookmarkID,
+                                ContentID,
+                                StartContainerPath,
+                                StartContainerChildIndex,
+                                StartOffset,
+                                EndContainerPath,
+                                EndContainerChildIndex,
+                                EndOffset,
+                                Text,
+                                Annotation,
+                                DateCreated,
+                                ChapterProgress,
+                                Hidden,
+                                Version,
+                                DateModified,
+                                Creator,
+                                UUID,
+                                UserID,
+                                SyncTime,
+                                Published,
+                                ContextString,
+                                Type,
+                                hex(ExtraAnnotationData) as ExtraAnnotationData
+                            FROM Bookmark 
+                            WHERE Hidden = 'false' AND VolumeId LIKE 'file:///mnt/onboard/%s' ESCAPE '\\' AND
+                            ContentId LIKE '/mnt/onboard/%s%%' ESCAPE '\\'
+                            """ % (
+                escaped_book_path,
+                escaped_book_path,
+            )
             cursor = connection.cursor()
-            cursor.execute(shelves_query)
+            cursor.execute(bookmarks_query)
             for i, row in enumerate(cursor):
-                shelves.append(Bookmark(
+                ExtraAnnotationSVG = None
+                ExtraAnnotationJPG = None
+                if row["ExtraAnnotationData"] is not "":
+                    bookmarkId = row["BookmarkID"]
+                    devicePath = self.get_device_path()
+                    markupsPath = os.path.join(devicePath, ".kobo", "markups")
+                    svgPath = os.path.join(markupsPath, bookmarkId + ".svg")
+                    jpgPath = os.path.join(markupsPath, bookmarkId + ".jpg")
+                    with open(svgPath, "rb") as file:
+                        data = file.read()
+                        ExtraAnnotationSVG = data.hex()
+                    with open(jpgPath, "rb") as file:
+                        data = file.read()
+                        ExtraAnnotationJPG = data.hex()
+
+                bookmark = Bookmark(
                     row["BookmarkID"],
                     remove_prefix(row["ContentID"],
                                   "/mnt/onboard/%s" % book_path),
@@ -342,10 +406,14 @@ class InterfacePlugin(InterfaceAction):
                     row["SyncTime"],
                     row["Published"],
                     row["ContextString"],
-                    row["Type"]
-                ))
+                    row["Type"],
+                    row["ExtraAnnotationData"],
+                    ExtraAnnotationSVG,
+                    ExtraAnnotationJPG,
+                )
+                bookmarks.append(bookmark)
             cursor.close()
-        return Bookmarks(shelves)
+        return Bookmarks(bookmarks)
 
 
 class Bookmarks(object):
@@ -382,7 +450,10 @@ class Bookmarks(object):
                 bookmark_dict["SyncTime"],
                 bookmark_dict["Published"],
                 bookmark_dict.get("ContextString", None),
-                bookmark_dict.get("Type", None)
+                bookmark_dict.get("Type", None),
+                bookmark_dict.get("ExtraAnnotationData", ""),
+                bookmark_dict.get("ExtraAnnotationSVG", None),
+                bookmark_dict.get("ExtraAnnotationJPG", None),
             ))
         return Bookmarks(bookmarks)
 
@@ -411,6 +482,9 @@ class Bookmark(object):
                  Published,
                  ContextString,
                  Type,
+                 ExtraAnnotationData,
+                 ExtraAnnotationSVG,
+                 ExtraAnnotationJPG,
                  *args, **kwargs):
         self.BookmarkID = BookmarkID
         self.ContentID = ContentID
@@ -435,34 +509,42 @@ class Bookmark(object):
         self.Published = Published
         self.ContextString = ContextString
         self.Type = Type
+        self.ExtraAnnotationData = ExtraAnnotationData
+        self.ExtraAnnotationSVG = ExtraAnnotationSVG
+        self.ExtraAnnotationJPG = ExtraAnnotationJPG
 
     def to_json(self):
         return json.dumps(self, default=lambda o: o.__dict__, indent=4, ensure_ascii=False)
 
     def __eq__(self, other):
-        return (self.BookmarkID == other.BookmarkID and
-                self.ContentID == other.ContentID and
-                self.StartContainerPath == other.StartContainerPath and
-                self.StartContainerChildIndex == other.StartContainerChildIndex and
-                self.StartOffset == other.StartOffset and
-                self.EndContainerPath == other.EndContainerPath and
-                self.EndContainerChildIndex == other.EndContainerChildIndex and
-                self.EndOffset == other.EndOffset and
-                self.Text == other.Text and
-                self.Annotation == other.Annotation and
-                self.DateCreated == other.DateCreated and
-                self.ChapterProgress == other.ChapterProgress and
-                self.Hidden == other.Hidden and
-                self.Version == other.Version and
-                self.DateModified == other.DateModified and
-                self.Creator == other.Creator and
-                self.UUID == other.UUID and
-                self.Creator == other.Creator and
-                self.UserID == other.UserID and
-                self.SyncTime == other.SyncTime and
-                self.Published == other.Published and
-                self.ContextString == other.ContextString and
-                self.Type == other.Type)
+        return (
+            self.BookmarkID == other.BookmarkID and
+            self.ContentID == other.ContentID and
+            self.StartContainerPath == other.StartContainerPath and
+            self.StartContainerChildIndex == other.StartContainerChildIndex and
+            self.StartOffset == other.StartOffset and
+            self.EndContainerPath == other.EndContainerPath and
+            self.EndContainerChildIndex == other.EndContainerChildIndex and
+            self.EndOffset == other.EndOffset and
+            self.Text == other.Text and
+            self.Annotation == other.Annotation and
+            self.DateCreated == other.DateCreated and
+            self.ChapterProgress == other.ChapterProgress and
+            self.Hidden == other.Hidden and
+            self.Version == other.Version and
+            self.DateModified == other.DateModified and
+            self.Creator == other.Creator and
+            self.UUID == other.UUID and
+            self.Creator == other.Creator and
+            self.UserID == other.UserID and
+            self.SyncTime == other.SyncTime and
+            self.Published == other.Published and
+            self.ContextString == other.ContextString and
+            self.Type == other.Type and
+            self.ExtraAnnotationData == other.ExtraAnnotationData and
+            self.ExtraAnnotationSVG == other.ExtraAnnotationSVG and
+            self.ExtraAnnotationJPG == other.ExtraAnnotationJPG
+        )
 
     def __ne__(self, other):
         return not self.__eq__(other)
